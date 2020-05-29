@@ -1,0 +1,73 @@
+project:
+  name: moco-custom-plants
+  syncFilters:
+    - exclude:
+        - .git/*
+        - .idea/*
+
+
+container:
+  projectDir: /workspace
+  #runtimeParameters: ['--cap-add','SYS_ADMIN', '--device', '/dev/fuse', '--security-opt','apparmor:unconfined']
+  runtimeParameters: ['--ipc', 'host']
+  image: ufoym/deepo
+  ports: [6006, 8888]
+  volumeMounts:
+    - name: workspace
+      mountPath: /workspace
+    # executed on container startup
+    #commands: |
+
+    # sudo apt update
+    # sudo apt-get -y install s3fs
+    # mkdir /mnt/datalake
+    # chmod 777 /mnt/datalake/
+
+#s3fs -o iam_role='AmazonS3ReadOnlyAccess' -o use_cache=/tmp/s3fs resnet-models /mnt/datalake
+
+instances:
+  - name: spotty-moco
+    provider: aws
+    parameters:
+      region: us-east-2
+      instanceType: p2.8xlarge
+      volumes:
+        - name: workspace
+          parameters:
+            size: 300
+            deletionPolicy: retain
+#      managedPolicyArns:
+#        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+# startable via spotty run ..
+
+scripts:
+  preprocess: |
+    wget --output-document=Plant_leaf_diseases_dataset_without_augmentation.zip https://data.mendeley.com/datasets/tywbtsjrjv/1/files/d5652a28-c1d8-4b76-97f3-72fb80f94efc/Plant_leaf_diseases_dataset_without_augmentation.zip
+    unzip Plant_leaf_diseases_dataset_without_augmentation.zip
+    rm Plant_leaf_diseases_dataset_without_augmentation.zip
+    mv Plant_leaf_diseases_dataset_without_augmentation train
+  # python preprocess.py
+
+  train_moco: |
+    python main_moco.py -a resnet50 \
+                          --lr 0.03 \
+                          --batch-size 256 \
+                          --dist-url 'tcp://localhost:10001' --multiprocessing-distributed --world-size 1 --rank 0 \
+                          --mlp --moco-t 0.2 --aug-plus --cos \
+                          /workspace
+
+  train_lincls: |
+    python main_lincls.py -a resnet50 \
+                            --lr 30.0 \
+                            --batch-size 256 \
+                            --pretrained /workspace/checkpoint_0199.pth.tar \
+                            --dist-url 'tcp://localhost:10001' --multiprocessing-distributed --world-size 1 --rank 0 \
+                            /workspace/plantdoc
+
+  #docker run --gpus all -it -p 8888:8888 --ipc=host ufoym/deepo jupyter notebook --no-browser --ip=0.0.0.0 --allow-root --NotebookApp.token= --notebook-dir='/root'
+  jupyter: |
+    jupyter notebook --allow-root --ip=0.0.0.0 --notebook-dir=/workspace
+
+  tensorboard: |
+    tensorboard --host 0.0.0.0 --logdir /workspace/tensorboard
